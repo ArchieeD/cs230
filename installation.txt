@@ -1,0 +1,2 @@
+conda install -c conda-forge transformers datasets pillow tqdm -y
+pip install torch --index-url https://download.pytorch.org/whl/cu121

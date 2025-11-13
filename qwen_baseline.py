@@ -1,9 +1,13 @@
 import torch
 from PIL import Image
-from transformers import AutoProcessor, AutoModelForVision2Seq
-from dataloader import load_data, split_dataset
+from transformers import (
+    AutoProcessor, 
+    AutoModelForVision2Seq,
+)
+from dataloader import load_data, split_dataset, save_img
 import os
 from tqdm import tqdm
+import re
 
 def get_model_and_data(model_id="Qwen/Qwen2.5-VL-3B-Instruct", gpu=True, subset="crohme2023"):
     if gpu:
@@ -48,32 +52,43 @@ def run_baseline(model_id="Qwen/Qwen2.5-VL-3B-Instruct", output_file="baseline_r
     """
     Run Qwen2.5-VL-3B-Instruct on the test set without any modifications.
     """
+    # Set output_file to be in the same directory as this script
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    output_file = os.path.join(script_dir, os.path.basename(output_file))
+    
     model, model_device, processor, _, _, _, test_ds = get_model_and_data()
 
     results = []
+    accuracy = 0
     
     for i in tqdm(range(len(test_ds))):
         sample = test_ds[i]
         image = sample["image"]
-        conversation = sample["conversations"][0]
+        conversation = sample["conversations"][0]['value']
         gt = sample["gt"]
+
+        text_part = conversation.replace('<image>', '').strip()
         
-        messages = {"role": "user", "content": conversation['value']}
+        # Format messages with image in content list
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": text_part+f" Put the expression in between $ $ signs. Characters should be separated by 1 space. For every subscript and superscript, always wrap the index or exponent in curly braces, even if it is a single character. Return only the LaTeX expression."}
+                ]
+            }
+        ]
         
-        # Prepare inputs - Qwen processor expects messages and images
-        # The processor will automatically replace <image> tokens in messages with the actual image
-        # and apply the chat template
-        inputs = processor(
-            text=messages,  # Pass messages directly, not pre-processed text
-            images=image,
+        inputs = processor.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=True,
+            return_dict=True,
             return_tensors="pt",
             padding=True
-        )
-        # Move all input tensors to the model's device
-        inputs = {k: v.to(model_device) if isinstance(v, torch.Tensor) else v 
-                  for k, v in inputs.items()}
+        ).to(model_device)
         
-        # Generate
         with torch.no_grad():
             generated_ids = model.generate(
                 **inputs,
@@ -81,36 +96,61 @@ def run_baseline(model_id="Qwen/Qwen2.5-VL-3B-Instruct", output_file="baseline_r
                 do_sample=False
             )
         
-        # Decode - extract only the newly generated tokens
         input_length = inputs.input_ids.shape[1]
         generated_ids_only = generated_ids[0, input_length:]
         generated_text = processor.decode(
             generated_ids_only, 
             skip_special_tokens=True
         )
+
+        match = re.search(r"\$\$(.*?)\$\$", generated_text)
+        if match:
+            pure_expression = match.group(1).replace(" ", "")
+        else:
+            # Fallback: try single $ signs or use the whole text
+            match = re.search(r"\$(.*?)\$", generated_text)
+            if match:
+                pure_expression = match.group(1).replace(" ", "")
+            else:
+                pure_expression = generated_text.replace(" ", "")
+        
+        gt_original = gt
+        gt = gt.replace(" ", "")
         
         results.append({
             "id": sample.get("id", i),
             "ground_truth": gt,
-            "prediction": generated_text
+            "prediction": pure_expression
         })
+
+        accuracy += gt == pure_expression
+        
+        
     
-    # Save results
+
     with open(output_file, "w") as f:
         f.write("ID\tGround Truth\tPrediction\n")
         for r in results:
             f.write(f"{r['id']}\t{r['ground_truth']}\t{r['prediction']}\n")
+        if len(results) > 0:
+            f.write(f'Accuracy: {accuracy/len(results)}\n')
+        else:
+            f.write('Accuracy: N/A (no results)\n')
     
     print(f"\nResults saved to {output_file}")
-    print(f"Processed {len(results)} test samples")
+    if len(results) > 0:
+        print(f"\nAccuracy: {accuracy/len(results)}")
+    else:
+        print("\nAccuracy: N/A (no results)")
+    # print(f"Processed {len(results)} test samples")
     
-    return results
+    return results, accuracy
 
 def test_single_example(test_idx, model_id="Qwen/Qwen2.5-VL-3B-Instruct", subset="crohme2023"):
     """
     Test a single example from the test set to verify the pipeline works.
     """
-    model, model_device, processor, _, _, test_ds = get_model_and_data()
+    model, model_device, processor, _, _, _, test_ds = get_model_and_data()
     
     # Get first example
     print("\n" + "="*60)
@@ -125,29 +165,40 @@ def test_single_example(test_idx, model_id="Qwen/Qwen2.5-VL-3B-Instruct", subset
     print(f"Image size: {sample['image'].size if hasattr(sample['image'], 'size') else 'N/A'}")
     
     image = sample["image"]
-    conversation = sample["conversations"][0]
+    conversation = sample["conversations"][0]['value']
     gt = sample["gt"]
+
+    save_img(image)
     
-    # Format messages - need to handle the full conversation format
-    messages = {"role": "user", "content": conversation['value']}
+    # Extract text part (remove <image> token if present)
+    # Qwen2.5-VL expects content as a list with image and text
+    text_part = conversation.replace('<image>', '').strip()
+
     
-    print(f"\nFormatted messages: {messages}")
+    # Format messages with image in content list
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "image": image},
+                {"type": "text", "text": text_part+f" Put the expression in between $ $ signs. Characters should be separated by 1 space. For every subscript and superscript, always wrap the index or exponent in curly braces, even if it is a single character. Return only the LaTeX expression."}
+            ]
+        }
+    ]
+
+    
     
     # Prepare inputs
     print("\nProcessing inputs...")
-    inputs = processor(
-        text=messages,
-        images=image,
+    inputs = processor.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+        tokenize=True,
+        return_dict=True,
         return_tensors="pt",
         padding=True
-    )
-    
-    print(f"Input keys: {inputs.keys()}")
-    print(f"Input shapes: {[(k, v.shape if isinstance(v, torch.Tensor) else type(v)) for k, v in inputs.items()]}")
-    
-    # Move all input tensors to the model's device
-    inputs = {k: v.to(model_device) if isinstance(v, torch.Tensor) else v 
-              for k, v in inputs.items()}
+    ).to(model_device)
+  
     
     # Generate
     print("\nGenerating response...")

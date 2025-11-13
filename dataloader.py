@@ -7,12 +7,15 @@ from transformers import AutoProcessor, AutoModelForVision2Seq
 
 
 def load_data(subset):
-    ds = load_dataset(
-        "phxember/Uni-MuMER-Data",
-        subset,
-        cache_dir="~/cs230/crohme"
-    )
-    return ds["train"]
+    # ds = load_dataset(
+    #     "phxember/Uni-MuMER-Data",
+    #     subset,
+    #     cache_dir="~/cs230/crohme"
+    # )
+    # return ds["train"]
+    ds = load_dataset("andito/mathwriting-google", cache_dir = "~/cs230/mathwriting")
+
+    return ds, ds['train'], ds['validation'], ds['test']
 
 def split_dataset(ds, train_ratio=0.7, val_ratio=0.15, test_ratio=0.15, seed=42):
     """
@@ -123,9 +126,9 @@ def get_model_and_data(model_id="Qwen/Qwen2.5-VL-3B-Instruct", gpu=True, subset=
         raise RuntimeError(f"ERROR: Model is not on GPU! Model device: {model_device}")
     
     print(f"Loading dataset: {subset}")
-    ds = load_data(subset)
-    train_ds, val_ds, test_ds = split_dataset(ds, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1)
-    
+    # ds = load_data(subset)
+    # train_ds, val_ds, test_ds = split_dataset(ds, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1)
+    ds, train_ds, val_ds, test_ds = load_data(subset)
     print(f"Train set: {len(train_ds)} samples")
     print(f"Validation set: {len(val_ds)} samples")
     print(f"Test set: {len(test_ds)} samples")
@@ -135,7 +138,8 @@ def get_model_and_data(model_id="Qwen/Qwen2.5-VL-3B-Instruct", gpu=True, subset=
 #FIXME
 def save_img(img):
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    save_dir = os.path.join(current_dir, "crohme")
+    # save_dir = os.path.join(current_dir, "crohme")
+    save_dir = os.path.join(current_dir, "mathwriting")
     os.makedirs(save_dir, exist_ok=True)
     save_path = os.path.join(save_dir, "sample_image.png")
     img.save(save_path)

@@ -53,3 +53,5 @@ outputs/
 baseline_results.txt
 *.results.txt
 
+mathwriting/
+
